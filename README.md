@@ -1,101 +1,81 @@
-# 张伟名称规范 — 知网定向检索+实体对齐系统
+# 张伟名称规范 - 知网论文匹配 + 作者简介提取
 
-## 背景
+基于种子画像（姓名+机构+生年）在知网定向检索论文，自动匹配机构、提取摘要和作者简介。
 
-"张伟"是中国最常见的姓名之一（超过30万人）。在学术论文数据库中，大量同名作者混杂在一起，导致名称规范记录（Name Authority Record）难以区分。
+## 输出
 
-本系统解决的核心问题：**给定一个已知的张伟画像（姓名+机构+领域+生年），在知网中找到该人发表的所有论文，并通过嵌入模型计算相似度，判定是否属于同一个人。**
+`matched_papers_v2.xlsx`，包含：
+- 控制号、种子单位、生年
+- 论文标题、论文作者、论文机构、发表年份
+- 摘要、论文链接
+- **作者简介**（从 HTML 阅读页提取）
 
-## 核心流水线
+## 新电脑搭建（Claude Code 操作）
 
-```
-Excel画像(姓名+机构+生年) 
-  → cnki_api(FUZZY模糊搜索) 
-  → 开详情页(/kcms2/article/abstract) 
-  → 角标提取机构(张伟²→机构2=泰安市中医院) 
-  → 双向包含校验(子单位匹配) 
-  → 每画像立即存盘(崩溃不丢数据)
-  → Sentence-BERT嵌入评分(机构+领域+生年 vs 论文+摘要)
-  → 最终输出(matched_papers_v2.xlsx)
-```
+### 1. 环境准备
 
-## 相似度算法
-
-**Sentence-BERT 嵌入 + 最长公共子序列(LCS) + 年代校验**
-
-```
-综合得分 = 0.5 × 嵌入余弦相似度 + 0.3 × 机构LCS + 0.2 × 年代得分
-
-Profile文本: "机构：泰安市中医院。研究领域：医学。生年：1966。"
-Paper文本:  "机构：泰安市中医院。论文：美沙拉秦...。摘要：溃疡性结肠炎..."
-
-判定: ≥0.6高置信度 | 0.45-0.6中 | 0.3-0.45低 | <0.3存疑 | 0无匹配
+```bash
+pip install pandas openpyxl numpy opencv-python
+pip install ddddocr  # 可选，滑块验证码破解用
 ```
 
-## 最终结果
+### 2. Chrome 远程调试
 
-| 指标 | 数值 |
-|------|------|
-| 处理画像数 | 154 |
-| 总行数 | 967 |
-| 无匹配画像 | 62（得分=0，判定="无匹配论文"） |
+Chrome 地址栏打开 `chrome://inspect/#remote-debugging`，勾选 **"Allow remote debugging for this browser instance"**。
 
-| 判定 | 数量 |
-|------|------|
-| 高置信度 (≥0.6) | 567 |
-| 中置信度 (0.45-0.6) | 310 |
-| 低置信度 (0.3-0.45) | 23 |
-| 存疑 (<0.3) | 5 |
+### 3. 启动 CDP Proxy
+
+安装 Claude Code 的 web-access skill，启动 CDP Proxy（端口 3456）。
+
+### 4. 准备输入文件
+
+将 `张伟1(1).xlsx`（含 sheet2 的 154 个张伟画像）放到指定位置。
+
+### 5. 运行
+
+```bash
+# 从第96个profile续跑（之前的已完成）
+python pipeline.py \
+  --dep ./author_agent \
+  --input 张伟1(1).xlsx \
+  --output matched_papers_v2.xlsx \
+  --start 96
+
+# 分批跑（0-6）
+python pipeline.py --dep ./author_agent --input 张伟1.xlsx --start 0 --end 6
+```
+
+### 6. 中途验证码
+
+bar.cnki.net 会弹拼图验证码，目前 CDP 代理不支持真实鼠标拖拽事件，自动破解不了。**需要人工去 Chrome 手动完成验证码**，完成后程序继续。
+
+建议每 5-6 个 profile 清一次验证码。
+
+## 参数说明
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--dep` | author_agent 目录路径 | `E:\名称规范系统\旧规范文档` |
+| `--input` | 输入 Excel 文件 | `C:\Users\Administrator\Desktop\张伟1(1).xlsx` |
+| `--output` | 输出 Excel 文件 | `E:\名称规范系统\新规范文档系统\matched_papers_v2.xlsx` |
+| `--start` | 起始 profile 索引 | 0 |
+| `--end` | 结束 profile 索引 | 全部 |
 
 ## 文件结构
 
 ```
-├── pipeline.py               # 主流水线（稳健版：每画像存盘，断点续跑）
-├── score_embedding.py        # 嵌入评分（Sentence-BERT + LCS + 年代）
-├── cnki_api.py               # 知网FUZZY搜索API
-├── cdp_client.py             # CDP Proxy浏览器客户端
-├── dedup.py                  # 去重清洗脚本
-├── requirements.txt          # pandas, openpyxl
-└── README.md
+├── pipeline.py           # 主程序
+├── slider_solver.py      # 滑块破解（ddddocr + OpenCV）
+└── author_agent/
+    ├── __init__.py        # 空文件
+    ├── cnki_api.py        # 知网搜索 API
+    └── cdp_client.py      # CDP 浏览器控制
 ```
 
-## 使用方法
+## 原理
 
-### 前置条件
-
-1. Chrome远程调试 + CDP Proxy (localhost:3456)
-2. conda环境 `E:\dedup-env`（sentence-transformers, torch）
-3. 输入文件：张伟1(1).xlsx (sheet2)
-
-### 运行
-
-```bash
-# 第一步：搜画像→匹配论文（每画像存盘，崩了重跑自动续）
-python pipeline.py
-
-# 第二步：嵌入评分
-python score_embedding.py
-```
-
-### 稳健特性
-
-- 每处理完一个画像立即保存Excel
-- CDP连接失败自动重试5次
-- 每个论文提取都有try/except保护
-- Ctrl+C中断也会保存数据
-- 重新运行自动加载已有数据跳过
-
-## 已知局限
-
-- 62个画像在知网中未找到论文
-- 部分论文机构提取有噪音（摘要文本混入机构字段）
-- 需要Chrome保持运行+CDP连接稳定
-- 嵌入模型对中文支持有限，可升级为 `text2vec-base-chinese`
-
-## 开发历程
-
-1. **V1**: 盲目搜索"张伟"→开HTML阅读页→bar.cnki.net防爬挡死
-2. **V2**: XHR搜索+DEFAULT匹配→搜不到
-3. **V3**: FUZZY搜索+角标匹配+双向校验→成功
-4. **V4**: 全量154画像→每画像存盘→断点续跑→967条
-5. **V5**: Sentence-BERT嵌入+领域信息→567高置信度
+1. 在知网高级检索页通过 XHR 调用 `/kns8s/brief/grid` API 搜索「张伟+机构」
+2. 逐个打开论文摘要页，提取角标匹配的机构、摘要、年份
+3. 如果摘要页有 HTML 阅读入口，通过 `location.href` 跳转 reader 页提取作者简介
+4. 每篇论文间隔 15-25 秒防止触发验证码
+5. 搜索结果为 0 时自动降级搜索（去掉系/室/部等细节重新搜）
