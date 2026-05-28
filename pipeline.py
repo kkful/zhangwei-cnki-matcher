@@ -3,16 +3,25 @@
 每处理一个画像立即保存，崩溃不丢数据。
 支持断点续跑、分批处理、作者简介提取。
 
-Usage: python pipeline.py [--start N] [--end M] [--out FILE]
+Usage:
+  python pipeline.py --dep E:\旧规范文档 --input 张伟.xlsx --output matched.xlsx
+  python pipeline.py --start 0 --end 10                     # 分批处理
+  python pipeline.py --start 96                              # 断点续跑
 """
 import sys, os, json, time, re, random, urllib.request, traceback
 import pandas as pd
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-sys.path.insert(0, r"E:\名称规范系统\旧规范文档")
+# === 可配置路径（命令行参数可覆盖） ===
+_args = sys.argv[1:]
+DEP_PATH    = _args[_args.index("--dep")+1] if "--dep" in _args else r"E:\名称规范系统\旧规范文档"
+INPUT_FILE  = _args[_args.index("--input")+1] if "--input" in _args else r"C:\Users\Administrator\Desktop\张伟1(1).xlsx"
+OUTPUT_FILE = _args[_args.index("--output")+1] if "--output" in _args else _args[_args.index("--out")+1] if "--out" in _args else r"E:\名称规范系统\新规范文档系统\matched_papers_v2.xlsx"
+PROXY = "http://localhost:3456"
+
+sys.path.insert(0, DEP_PATH)
 from author_agent.cnki_api import ensure_cnki_tab
-from author_agent.cdp_client import eval_js as _eval_js, close_tab, page_text, navigate, wait_for_load
 
 # 内联搜索（补全所有必要字段，不依赖页面状态）
 SEARCH_JS = r"""
@@ -42,12 +51,6 @@ SEARCH_JS = r"""
 })()
 """
 
-PROXY = "http://localhost:3456"
-INPUT_FILE = r"C:\Users\Administrator\Desktop\张伟1(1).xlsx"
-OUTPUT_FILE = r"E:\名称规范系统\新规范文档系统\matched_papers_v2.xlsx"
-if "--out" in sys.argv:
-    OUTPUT_FILE = sys.argv[sys.argv.index("--out") + 1]
-
 def search_cnki(tab_id, author, institution=""):
     """搜索知网，返回 {count, titles, resultHtml, htmlLength}"""
     js = SEARCH_JS.replace("{author}", author).replace("{institution}", institution or "")
@@ -60,14 +63,7 @@ def search_cnki(tab_id, author, institution=""):
         if t not in ('题名', '作者', '来源', '发表时间', '数据库', '被引', '下载', '操作') and len(t) > 3:
             titles.append(t)
     return {"count": count, "titles": titles[:20], "resultHtml": html, "htmlLength": len(html)}
-
-def eval_js(tab_id, js, retries=5):
-    for i in range(retries):
-        try: return _eval_js(tab_id, js)
-        except Exception as e:
-            if i < retries - 1:
-                time.sleep(2)
-            else: raise
+from author_agent.cdp_client import eval_js as _eval_js, close_tab, page_text, navigate, wait_for_load
 
 def get(path, retries=5):
     for i in range(retries):
@@ -76,6 +72,13 @@ def get(path, retries=5):
                 return json.loads(r.read())
         except Exception as e:
             if i < retries - 1: time.sleep(3)
+            else: raise
+
+def eval_js(tab_id, js, retries=5):
+    for i in range(retries):
+        try: return _eval_js(tab_id, js)
+        except Exception as e:
+            if i < retries - 1: time.sleep(2)
             else: raise
 
 def extract_abstract(tab_id, detail_url):
